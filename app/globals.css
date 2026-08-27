@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #fbfbf9;
+  color: #111111;
+}
+
+.label {
+  @apply text-[10px] uppercase tracking-label text-mute md:text-[11px];
+}
+
+.label-ink {
+  @apply text-[10px] uppercase tracking-label text-ink md:text-[11px];
+}
+
+::selection {
+  background: #111111;
+  color: #fbfbf9;
+}
