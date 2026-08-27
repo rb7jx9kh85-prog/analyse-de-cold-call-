@@ -4,6 +4,13 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    return NextResponse.json(
+      { error: "BLOB_READ_WRITE_TOKEN n'est pas configuré sur ce déploiement. Connecte un store Vercel Blob au projet." },
+      { status: 500 }
+    );
+  }
+
   const body = (await request.json()) as HandleUploadBody;
 
   try {
@@ -19,13 +26,14 @@ export async function POST(request: Request): Promise<NextResponse> {
           maximumSizeInBytes: 500 * 1024 * 1024,
         };
       },
-      onUploadCompleted: async () => {
-        /* no-op: session record is created by /api/analyze once the client confirms the upload */
-      },
+      // No onUploadCompleted webhook: the client confirms the upload itself by calling
+      // /api/analyze/start right after upload() resolves, so no server-to-server callback
+      // is needed — and skipping it avoids Vercel Blob's callback-URL resolution entirely.
     });
 
     return NextResponse.json(jsonResponse);
   } catch (error) {
+    console.error("blob-upload token generation failed:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Upload token error." }, { status: 400 });
   }
 }
