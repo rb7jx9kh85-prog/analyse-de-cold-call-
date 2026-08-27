@@ -12,6 +12,7 @@ export default function SessionPage() {
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [insightLoading, setInsightLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function load() {
     const res = await fetch(`/api/sessions/${id}`);
@@ -37,7 +38,13 @@ export default function SessionPage() {
 
   async function deleteSession() {
     if (!confirm("Delete this session and all its calls?")) return;
-    await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    setDeleteError(null);
+    const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setDeleteError(data.error ?? `La suppression a échoué (${res.status}).`);
+      return;
+    }
     router.push("/history");
   }
 
@@ -45,11 +52,23 @@ export default function SessionPage() {
 
   const bestCall = calls.find((c) => c.id === session.stats.bestCallId);
   const worstCall = calls.find((c) => c.id === session.stats.worstCallId);
+  const failedCalls = calls.filter((c) => !c.edited && c.analysisNote.startsWith("Analyse indisponible"));
 
   return (
     <div className="animate-rise">
       <span className="label-ink block">{session.id}</span>
       <span className="label mt-1 block">{formatDateTime(session.createdAt)}</span>
+
+      {failedCalls.length > 0 && (
+        <div className="mt-4 border border-red px-4 py-3">
+          <span className="block text-[10px] uppercase tracking-label text-red">
+            {failedCalls.length} call{failedCalls.length > 1 ? "s" : ""} not analyzed
+          </span>
+          <p className="mt-1 text-xs text-mute">
+            L'analyse IA a échoué pour {failedCalls.length > 1 ? "ces appels" : "cet appel"} — utilise "Retry analysis" sur leur page pour relancer.
+          </p>
+        </div>
+      )}
 
       <div className="mt-6 grid grid-cols-2 gap-y-3 border-b border-hair pb-6 sm:grid-cols-4">
         <div>
@@ -124,6 +143,7 @@ export default function SessionPage() {
       <button onClick={deleteSession} className="mt-8 text-[10px] uppercase tracking-label text-mute hover:text-red">
         Delete session
       </button>
+      {deleteError && <p className="mt-2 text-[10px] uppercase tracking-label text-red">{deleteError}</p>}
     </div>
   );
 }

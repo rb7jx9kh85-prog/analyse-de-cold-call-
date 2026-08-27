@@ -1,5 +1,6 @@
 import type { CallRecord, SessionRecord } from "./types";
 import { outcomeGroup } from "./types";
+import { getSession, saveSession, listCalls } from "./storage";
 
 export function emptyStats(): SessionRecord["stats"] {
   return {
@@ -66,4 +67,23 @@ export function computeStats(calls: CallRecord[]): SessionRecord["stats"] {
     mainIssue: null,
     improvementTip: null,
   };
+}
+
+/** Recomputes and persists a session's call-derived stats from its current calls. Call this after any create/edit/retry/delete of a call so counts, rates, best/worst never drift. */
+export async function refreshSessionStats(sessionId: string): Promise<SessionRecord | null> {
+  const session = await getSession(sessionId);
+  if (!session) return null;
+  const calls = await listCalls(sessionId);
+  const updated: SessionRecord = {
+    ...session,
+    callIds: calls.map((c) => c.id),
+    stats: {
+      ...computeStats(calls),
+      sessionScore: session.stats.sessionScore,
+      mainIssue: session.stats.mainIssue,
+      improvementTip: session.stats.improvementTip,
+    },
+  };
+  await saveSession(updated);
+  return updated;
 }

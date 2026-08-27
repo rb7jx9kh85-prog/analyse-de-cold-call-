@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCall, saveCall } from "@/lib/storage";
 import { analyzeCall } from "@/lib/ai/openai";
+import { refreshSessionStats } from "@/lib/sessionStats";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -37,5 +38,6 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   };
 
   await saveCall(updated);
+  await refreshSessionStats(call.sessionId);
   return NextResponse.json({ call: updated });
 }

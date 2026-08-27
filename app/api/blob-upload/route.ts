@@ -17,7 +17,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     const jsonResponse = await handleUpload({
       body,
       request,
-      onBeforeGenerateToken: async () => {
+      onBeforeGenerateToken: async (pathname) => {
+        if (!pathname.startsWith("tmp-upload/")) {
+          throw new Error("Only uploads under tmp-upload/ are permitted.");
+        }
         // Browsers/OS often mislabel or omit the MIME type for .m4a/.wav recordings
         // (empty string, "application/octet-stream", etc.), so content type is not
         // restricted here — the file is validated downstream when Whisper transcribes it.

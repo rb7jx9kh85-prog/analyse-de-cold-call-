@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { saveSession, saveWork, getSession } from "@/lib/storage";
+import { saveSession, saveWork, getSession, finalizeAudioUpload, readAudio, sanitizeSegment } from "@/lib/storage";
 import { transcribeAudio, segmentCalls, MAX_AUDIO_BYTES } from "@/lib/ai/openai";
 import { emptyStats } from "@/lib/sessionStats";
 import type { SessionRecord } from "@/lib/types";
@@ -10,25 +10,29 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   let sessionId = "";
-  let audioUrl: string | undefined;
   let filename: string | undefined;
 
   try {
     const body = await req.json();
     sessionId = body.sessionId;
-    audioUrl = body.audioUrl;
     filename = body.filename;
     const contentType: string | undefined = body.contentType;
 
-    if (!sessionId || !audioUrl) {
-      return NextResponse.json({ error: "Requête invalide : sessionId ou audioUrl manquant." }, { status: 400 });
+    if (!sessionId || !filename) {
+      return NextResponse.json({ error: "Requête invalide : sessionId ou filename manquant." }, { status: 400 });
     }
+
+    // The temp upload is moved into the private audio store server-side (no client-supplied
+    // URL is ever fetched here — the pathname is derived only from sessionId/filename, which
+    // rules out SSRF via an arbitrary audioUrl).
+    const audioPathname = await finalizeAudioUpload(sessionId, filename, contentType ?? "audio/mpeg");
+    const audioProxyUrl = `/api/audio/${sanitizeSegment(sessionId)}/${sanitizeSegment(filename)}`;
 
     let session: SessionRecord = {
       id: sessionId,
       createdAt: new Date().toISOString(),
-      label: filename ?? "Session",
-      audioUrl,
+      label: filename,
+      audioUrl: audioProxyUrl,
       duration: 0,
       status: "transcribing",
       progressMessage: "02 — TRANSCRIBING",
@@ -38,17 +42,17 @@ export async function POST(req: NextRequest) {
     };
     await saveSession(session);
 
-    const audioRes = await fetch(audioUrl);
-    if (!audioRes.ok) {
+    const audio = await readAudio(audioPathname);
+    if (!audio) {
       throw new Error("Impossible de récupérer le fichier audio uploadé.");
     }
-    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+    const audioBuffer = Buffer.from(await new Response(audio.stream).arrayBuffer());
     if (audioBuffer.byteLength > MAX_AUDIO_BYTES) {
       throw new Error(
         "Le fichier dépasse la limite de 25MB imposée par l'API de transcription. Découpe l'enregistrement en plusieurs fichiers plus courts et importe-les séparément."
       );
     }
-    const file = new File([audioBuffer], filename ?? "recording", { type: contentType || "audio/mpeg" });
+    const file = new File([audioBuffer], filename, { type: contentType || "audio/mpeg" });
 
     const transcription = await transcribeAudio(file);
 
@@ -58,7 +62,7 @@ export async function POST(req: NextRequest) {
     const segments = await segmentCalls(transcription.segments, transcription.duration);
 
     await saveWork(sessionId, {
-      audioUrl,
+      audioUrl: audioProxyUrl,
       duration: transcription.duration,
       transcriptSegments: transcription.segments,
       callSegments: segments,
@@ -81,7 +85,7 @@ export async function POST(req: NextRequest) {
           id: sessionId || `SESSION-ERROR-${Date.now()}`,
           createdAt: new Date().toISOString(),
           label: filename ?? "Session",
-          audioUrl: audioUrl ?? null,
+          audioUrl: null,
           duration: 0,
           status: "error",
           progressMessage: null,

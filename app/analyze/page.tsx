@@ -39,9 +39,13 @@ export default function AnalyzePage() {
     setProgress("01 — UPLOADING");
 
     try {
-      const sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}`;
+      const randomSuffix = crypto.randomUUID().slice(0, 8).toUpperCase();
+      const sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}-${randomSuffix}`;
 
-      const blob = await upload(`audio/${sessionId}/${file.name}`, file, {
+      // Vercel Blob's client-upload SDK can only create public blobs, so the file lands
+      // in a temp/ prefix first; /api/analyze/start moves it server-side into private
+      // storage (no bytes pass through our function for that move).
+      await upload(`tmp-upload/${sessionId}/${file.name}`, file, {
         access: "public",
         handleUploadUrl: "/api/blob-upload",
       });
@@ -51,7 +55,7 @@ export default function AnalyzePage() {
       const startRes = await fetch("/api/analyze/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, audioUrl: blob.url, filename: file.name, contentType: file.type }),
+        body: JSON.stringify({ sessionId, filename: file.name, contentType: file.type }),
       });
       const startData = await parseJsonSafe(startRes);
       if (!startRes.ok) {
