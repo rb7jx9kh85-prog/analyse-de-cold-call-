@@ -84,14 +84,28 @@ export default function CallPage() {
 
   async function remove() {
     if (!confirm("Delete this call?")) return;
-    await fetch(`/api/calls/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/calls/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error ?? `La suppression a échoué (${res.status}).`);
+      return;
+    }
     router.push("/history");
   }
 
   function seekTo(seconds: number) {
+    // `seconds` is already an absolute offset within the full session recording
+    // (transcript timestamps are computed against the whole file, not per-call),
+    // so it must NOT be re-offset by call.startTime here.
     if (audioRef.current) {
-      audioRef.current.currentTime = seconds - (call?.startTime ?? 0);
+      audioRef.current.currentTime = seconds;
       audioRef.current.play();
+    }
+  }
+
+  function handleTimeUpdate() {
+    if (audioRef.current && call && audioRef.current.currentTime >= call.endTime) {
+      audioRef.current.pause();
     }
   }
 
@@ -105,7 +119,16 @@ export default function CallPage() {
 
       {call.audioUrl && (
         <div className="mt-6 border border-hair px-4 py-3">
-          <audio ref={audioRef} src={call.audioUrl} controls className="w-full" />
+          <audio
+            ref={audioRef}
+            src={call.audioUrl}
+            controls
+            className="w-full"
+            onLoadedMetadata={() => {
+              if (audioRef.current) audioRef.current.currentTime = call.startTime;
+            }}
+            onTimeUpdate={handleTimeUpdate}
+          />
         </div>
       )}
 

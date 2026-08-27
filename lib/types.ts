@@ -142,6 +142,13 @@ export interface SessionSummaryStats {
 
 export type SessionStatus = "uploading" | "transcribing" | "detecting" | "analyzing" | "saving" | "ready" | "error";
 
+export interface SessionWorkData {
+  audioUrl: string;
+  duration: number;
+  transcriptSegments: { start: number; end: number; text: string }[];
+  callSegments: { startTime: number; endTime: number; reason: string }[];
+}
+
 export interface SessionRecord {
   id: string;
   createdAt: string;

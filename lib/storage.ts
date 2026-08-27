@@ -1,44 +1,44 @@
-import { put, del, head, list } from "@vercel/blob";
+import { put, del, get, list, rename } from "@vercel/blob";
 import type { CallRecord, SessionRecord } from "./types";
+
+const token = () => process.env.BLOB_READ_WRITE_TOKEN;
 
 function jsonOpts() {
   return {
-    access: "public" as const,
+    access: "private" as const,
     addRandomSuffix: false,
     contentType: "application/json",
     allowOverwrite: true,
+    token: token(),
   };
 }
 
-export async function saveSession(session: SessionRecord): Promise<void> {
-  await put(`sessions/${session.id}.json`, JSON.stringify(session), jsonOpts());
+async function putJson(pathname: string, data: unknown): Promise<void> {
+  await put(pathname, JSON.stringify(data), jsonOpts());
 }
 
-export async function getSession(id: string): Promise<SessionRecord | null> {
+async function getJson<T>(pathname: string): Promise<T | null> {
   try {
-    const meta = await head(`sessions/${id}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
-    const res = await fetch(meta.url, { cache: "no-store" });
-    if (!res.ok) return null;
-    return (await res.json()) as SessionRecord;
+    const result = await get(pathname, { access: "private", token: token() });
+    if (!result || result.statusCode !== 200) return null;
+    return (await new Response(result.stream).json()) as T;
   } catch {
     return null;
   }
 }
 
+export async function saveSession(session: SessionRecord): Promise<void> {
+  await putJson(`sessions/${session.id}.json`, session);
+}
+
+export async function getSession(id: string): Promise<SessionRecord | null> {
+  return getJson<SessionRecord>(`sessions/${id}.json`);
+}
+
 export async function listSessions(): Promise<SessionRecord[]> {
-  const { blobs } = await list({ prefix: "sessions/", token: process.env.BLOB_READ_WRITE_TOKEN });
+  const { blobs } = await list({ prefix: "sessions/", token: token() });
   const sessions = await Promise.all(
-    blobs
-      .filter((b) => b.pathname.endsWith(".json"))
-      .map(async (b) => {
-        try {
-          const res = await fetch(b.url, { cache: "no-store" });
-          if (!res.ok) return null;
-          return (await res.json()) as SessionRecord;
-        } catch {
-          return null;
-        }
-      })
+    blobs.filter((b) => b.pathname.endsWith(".json")).map((b) => getJson<SessionRecord>(b.pathname))
   );
   return sessions
     .filter((s): s is SessionRecord => s !== null)
@@ -46,42 +46,21 @@ export async function listSessions(): Promise<SessionRecord[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  try {
-    await del(`sessions/${id}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
-  } catch {
-    /* noop */
-  }
+  await del(`sessions/${id}.json`, { token: token() });
 }
 
 export async function saveCall(call: CallRecord): Promise<void> {
-  await put(`calls/${call.id}.json`, JSON.stringify(call), jsonOpts());
+  await putJson(`calls/${call.id}.json`, call);
 }
 
 export async function getCall(id: string): Promise<CallRecord | null> {
-  try {
-    const meta = await head(`calls/${id}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
-    const res = await fetch(meta.url, { cache: "no-store" });
-    if (!res.ok) return null;
-    return (await res.json()) as CallRecord;
-  } catch {
-    return null;
-  }
+  return getJson<CallRecord>(`calls/${id}.json`);
 }
 
 export async function listCalls(sessionId?: string): Promise<CallRecord[]> {
-  const { blobs } = await list({ prefix: "calls/", token: process.env.BLOB_READ_WRITE_TOKEN });
+  const { blobs } = await list({ prefix: "calls/", token: token() });
   const calls = await Promise.all(
-    blobs
-      .filter((b) => b.pathname.endsWith(".json"))
-      .map(async (b) => {
-        try {
-          const res = await fetch(b.url, { cache: "no-store" });
-          if (!res.ok) return null;
-          return (await res.json()) as CallRecord;
-        } catch {
-          return null;
-        }
-      })
+    blobs.filter((b) => b.pathname.endsWith(".json")).map((b) => getJson<CallRecord>(b.pathname))
   );
   const valid = calls.filter((c): c is CallRecord => c !== null);
   const filtered = sessionId ? valid.filter((c) => c.sessionId === sessionId) : valid;
@@ -89,28 +68,67 @@ export async function listCalls(sessionId?: string): Promise<CallRecord[]> {
 }
 
 export async function deleteCall(id: string): Promise<void> {
+  await del(`calls/${id}.json`, { token: token() });
+}
+
+export async function saveWork(sessionId: string, data: unknown): Promise<void> {
+  await putJson(`work/${sessionId}.json`, data);
+}
+
+export async function getWork<T>(sessionId: string): Promise<T | null> {
+  return getJson<T>(`work/${sessionId}.json`);
+}
+
+export async function deleteWork(sessionId: string): Promise<void> {
   try {
-    await del(`calls/${id}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    await del(`work/${sessionId}.json`, { token: token() });
   } catch {
-    /* noop */
+    /* transient working data — safe to ignore if already gone */
   }
 }
 
-export async function uploadAudio(sessionId: string, filename: string, file: Buffer | Blob, contentType: string): Promise<string> {
-  const blob = await put(`audio/${sessionId}/${filename}`, file, {
-    access: "public",
+/** Sanitizes a path segment: strips slashes and traversal sequences. */
+export function sanitizeSegment(segment: string): string {
+  return segment.replace(/[\\/]/g, "_").replace(/\.\./g, "_").trim() || "file";
+}
+
+export function tempAudioPathname(sessionId: string, filename: string): string {
+  return `tmp-upload/${sanitizeSegment(sessionId)}/${sanitizeSegment(filename)}`;
+}
+
+export function audioPathname(sessionId: string, filename: string): string {
+  return `audio/${sanitizeSegment(sessionId)}/${sanitizeSegment(filename)}`;
+}
+
+/**
+ * Moves a client-uploaded (necessarily public — the Blob client-upload SDK
+ * doesn't expose a private option) temp file into the private audio store,
+ * server-side, without pulling the bytes through this function.
+ */
+export async function finalizeAudioUpload(sessionId: string, filename: string, contentType: string): Promise<string> {
+  const from = tempAudioPathname(sessionId, filename);
+  const to = audioPathname(sessionId, filename);
+  await rename(from, to, {
+    access: "private",
+    contentType: contentType || "audio/mpeg",
     addRandomSuffix: false,
-    contentType,
     allowOverwrite: true,
+    token: token(),
   });
-  return blob.url;
+  return to;
+}
+
+export async function readAudio(pathname: string, rangeHeader?: string | null) {
+  const result = await get(pathname, {
+    access: "private",
+    token: token(),
+    headers: rangeHeader ? { Range: rangeHeader } : undefined,
+  });
+  if (!result || result.statusCode !== 200) return null;
+  return result;
 }
 
 export async function deleteAudio(sessionId: string): Promise<void> {
-  try {
-    const { blobs } = await list({ prefix: `audio/${sessionId}/`, token: process.env.BLOB_READ_WRITE_TOKEN });
-    await Promise.all(blobs.map((b) => del(b.url, { token: process.env.BLOB_READ_WRITE_TOKEN })));
-  } catch {
-    /* noop */
-  }
+  const { blobs } = await list({ prefix: `audio/${sanitizeSegment(sessionId)}/`, token: token() });
+  await Promise.all(blobs.map((b) => del(b.url, { token: token() })));
 }

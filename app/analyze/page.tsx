@@ -2,15 +2,24 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatDuration, formatDate } from "@/lib/format";
+import { upload } from "@vercel/blob/client";
+import { formatDate } from "@/lib/format";
 
-const STEPS = ["01 — UPLOADING", "02 — TRANSCRIBING", "03 — DETECTING CALLS", "04 — ANALYZING", "05 — SAVING"];
+async function parseJsonSafe(res: Response): Promise<any> {
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: res.status === 413 ? "Fichier trop volumineux." : `Erreur serveur (${res.status}).` };
+  }
+}
 
 export default function AnalyzePage() {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<"idle" | "processing" | "error">("idle");
-  const [progress, setProgress] = useState<string>(STEPS[0]);
+  const [progress, setProgress] = useState<string>("01 — UPLOADING");
+  const [failedCalls, setFailedCalls] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -26,29 +35,57 @@ export default function AnalyzePage() {
     if (!file) return;
     setStatus("processing");
     setError(null);
-    setProgress(STEPS[0]);
-
-    const pollInterval = setInterval(() => {
-      setProgress((prev) => {
-        const idx = STEPS.indexOf(prev);
-        return idx >= 0 && idx < STEPS.length - 1 ? STEPS[idx + 1] : prev;
-      });
-    }, 4000);
+    setFailedCalls(0);
+    setProgress("01 — UPLOADING");
 
     try {
-      const body = new FormData();
-      body.append("file", file);
-      const res = await fetch("/api/analyze", { method: "POST", body });
-      clearInterval(pollInterval);
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Erreur pendant l'analyse.");
+      const randomSuffix = crypto.randomUUID().slice(0, 8).toUpperCase();
+      const sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}-${randomSuffix}`;
+
+      // Vercel Blob's client-upload SDK can only create public blobs, so the file lands
+      // in a temp/ prefix first; /api/analyze/start moves it server-side into private
+      // storage (no bytes pass through our function for that move).
+      await upload(`tmp-upload/${sessionId}/${file.name}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/blob-upload",
+      });
+
+      setProgress("02 — TRANSCRIBING");
+
+      const startRes = await fetch("/api/analyze/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, filename: file.name, contentType: file.type }),
+      });
+      const startData = await parseJsonSafe(startRes);
+      if (!startRes.ok) {
+        setError(startData.error ?? "Erreur pendant la transcription.");
         setStatus("error");
         return;
       }
-      router.push(`/history/${data.sessionId}`);
+
+      const totalCalls: number = startData.totalCalls ?? 0;
+      if (totalCalls === 0) {
+        router.push(`/history/${sessionId}`);
+        return;
+      }
+
+      let failures = 0;
+      for (let i = 0; i < totalCalls; i++) {
+        setProgress(`04 — ANALYZING CALL ${i + 1} / ${totalCalls}`);
+        const callRes = await fetch("/api/analyze/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, index: i }),
+        });
+        if (!callRes.ok) {
+          failures += 1;
+          setFailedCalls(failures);
+        }
+      }
+
+      router.push(`/history/${sessionId}`);
     } catch (err) {
-      clearInterval(pollInterval);
       setError(err instanceof Error ? err.message : "Erreur réseau.");
       setStatus("error");
     }
@@ -57,18 +94,12 @@ export default function AnalyzePage() {
   if (status === "processing") {
     return (
       <div className="animate-rise pt-12">
-        <span className="label-ink block">Analyzing session</span>
-        <div className="mt-6 space-y-3">
-          {STEPS.map((step) => {
-            const isActive = step === progress;
-            const isDone = STEPS.indexOf(step) < STEPS.indexOf(progress);
-            return (
-              <div key={step} className={`text-sm ${isActive ? "text-ink animate-blink" : isDone ? "text-mute" : "text-hair"}`}>
-                {step}
-              </div>
-            );
-          })}
-        </div>
+        <span className="label-ink block animate-blink">{progress}</span>
+        {failedCalls > 0 && (
+          <p className="mt-4 text-xs text-mute">
+            {failedCalls} call(s) en erreur — récupérables individuellement via "Retry analysis" depuis leur page.
+          </p>
+        )}
       </div>
     );
   }
