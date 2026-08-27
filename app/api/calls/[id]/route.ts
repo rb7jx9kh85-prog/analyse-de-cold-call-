@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCall, saveCall, deleteCall, getSession, saveSession, listCalls } from "@/lib/storage";
+import { computeStats } from "@/lib/sessionStats";
 
 export const dynamic = "force-dynamic";
 
@@ -33,23 +34,10 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
   const session = await getSession(call.sessionId);
   if (session) {
     const remaining = await listCalls(call.sessionId);
-    const yes = remaining.filter((c) => ["accepted", "interested", "send_mockup", "send_email", "send_whatsapp", "meeting"].includes(c.outcome)).length;
-    const no = remaining.filter((c) => ["not_interested", "wrong_number", "gatekeeper"].includes(c.outcome)).length;
-    const noAnswer = remaining.filter((c) => c.outcome === "no_answer").length;
-    const callback = remaining.filter((c) => c.outcome === "callback").length;
     await saveSession({
       ...session,
       callIds: remaining.map((c) => c.id),
-      stats: {
-        ...session.stats,
-        totalCalls: remaining.length,
-        yes,
-        no,
-        noAnswer,
-        callback,
-        positiveRate: remaining.length ? Math.round((yes / remaining.length) * 100) : 0,
-        answerRate: remaining.length ? Math.round(((remaining.length - noAnswer) / remaining.length) * 100) : 0,
-      },
+      stats: { ...computeStats(remaining), sessionScore: session.stats.sessionScore, mainIssue: session.stats.mainIssue, improvementTip: session.stats.improvementTip },
     });
   }
 

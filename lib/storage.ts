@@ -96,6 +96,29 @@ export async function deleteCall(id: string): Promise<void> {
   }
 }
 
+export async function saveWork(sessionId: string, data: unknown): Promise<void> {
+  await put(`work/${sessionId}.json`, JSON.stringify(data), jsonOpts());
+}
+
+export async function getWork<T>(sessionId: string): Promise<T | null> {
+  try {
+    const meta = await head(`work/${sessionId}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    const res = await fetch(meta.url, { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteWork(sessionId: string): Promise<void> {
+  try {
+    await del(`work/${sessionId}.json`, { token: process.env.BLOB_READ_WRITE_TOKEN });
+  } catch {
+    /* noop */
+  }
+}
+
 export async function uploadAudio(sessionId: string, filename: string, file: Buffer | Blob, contentType: string): Promise<string> {
   const blob = await put(`audio/${sessionId}/${filename}`, file, {
     access: "public",

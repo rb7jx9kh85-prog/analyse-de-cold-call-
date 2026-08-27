@@ -11,17 +11,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       body,
       request,
       onBeforeGenerateToken: async () => {
+        // Browsers/OS often mislabel or omit the MIME type for .m4a/.wav recordings
+        // (empty string, "application/octet-stream", etc.), so content type is not
+        // restricted here — the file is validated downstream when Whisper transcribes it.
         return {
-          allowedContentTypes: [
-            "audio/mpeg",
-            "audio/mp4",
-            "audio/wav",
-            "audio/x-wav",
-            "audio/m4a",
-            "audio/x-m4a",
-            "video/mp4",
-            "application/octet-stream",
-          ],
           addRandomSuffix: false,
           maximumSizeInBytes: 500 * 1024 * 1024,
         };

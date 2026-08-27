@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, deleteSession, listCalls, deleteCall, deleteAudio } from "@/lib/storage";
+import { getSession, deleteSession, listCalls, deleteCall, deleteAudio, deleteWork } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +14,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
   const calls = await listCalls(params.id);
   await Promise.all(calls.map((c) => deleteCall(c.id)));
   await deleteAudio(params.id);
+  await deleteWork(params.id);
   await deleteSession(params.id);
   return NextResponse.json({ ok: true });
 }
