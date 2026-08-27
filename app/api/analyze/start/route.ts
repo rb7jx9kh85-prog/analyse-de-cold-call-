@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { saveSession, saveWork, getSession, finalizeAudioUpload, readAudio, sanitizeSegment } from "@/lib/storage";
+import { waitUntil } from "@vercel/functions";
+import { saveSession, saveWork, getSession, deleteWork, finalizeAudioUpload, readAudio, sanitizeSegment } from "@/lib/storage";
 import { transcribeAudio, segmentCalls, MAX_AUDIO_BYTES } from "@/lib/ai/openai";
 import { emptyStats } from "@/lib/sessionStats";
+import { internalAuthHeaders } from "@/lib/internalFetch";
 import type { SessionRecord } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -68,12 +70,30 @@ export async function POST(req: NextRequest) {
       callSegments: segments,
     });
 
+    if (segments.length === 0) {
+      session = { ...session, status: "ready", progressMessage: null };
+      await saveSession(session);
+      await deleteWork(sessionId);
+      return NextResponse.json({ sessionId, totalCalls: 0 });
+    }
+
     session = {
       ...session,
       status: "analyzing",
       progressMessage: `04 — ANALYZING CALL 1 / ${segments.length}`,
     };
     await saveSession(session);
+
+    // Hand off to /api/analyze/call, which analyzes exactly one call per invocation and
+    // self-triggers the next one via waitUntil — the whole rest of the pipeline now runs
+    // server-side and keeps going even if the browser navigates away or closes.
+    waitUntil(
+      fetch(`${req.nextUrl.origin}/api/analyze/call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...internalAuthHeaders() },
+        body: JSON.stringify({ sessionId, index: 0 }),
+      }).catch(() => {})
+    );
 
     return NextResponse.json({ sessionId, totalCalls: segments.length });
   } catch (err) {

@@ -19,7 +19,6 @@ export default function AnalyzePage() {
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<"idle" | "processing" | "error">("idle");
   const [progress, setProgress] = useState<string>("01 — UPLOADING");
-  const [failedCalls, setFailedCalls] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -35,7 +34,6 @@ export default function AnalyzePage() {
     if (!file) return;
     setStatus("processing");
     setError(null);
-    setFailedCalls(0);
     setProgress("01 — UPLOADING");
 
     try {
@@ -64,26 +62,9 @@ export default function AnalyzePage() {
         return;
       }
 
-      const totalCalls: number = startData.totalCalls ?? 0;
-      if (totalCalls === 0) {
-        router.push(`/history/${sessionId}`);
-        return;
-      }
-
-      let failures = 0;
-      for (let i = 0; i < totalCalls; i++) {
-        setProgress(`04 — ANALYZING CALL ${i + 1} / ${totalCalls}`);
-        const callRes = await fetch("/api/analyze/call", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, index: i }),
-        });
-        if (!callRes.ok) {
-          failures += 1;
-          setFailedCalls(failures);
-        }
-      }
-
+      // From here on the server drives the rest of the pipeline itself (transcription is
+      // done; each call is analyzed one at a time and self-triggers the next) — it keeps
+      // running even if we navigate away now. The session page shows live progress.
       router.push(`/history/${sessionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur réseau.");
@@ -95,11 +76,9 @@ export default function AnalyzePage() {
     return (
       <div className="animate-rise pt-12">
         <span className="label-ink block animate-blink">{progress}</span>
-        {failedCalls > 0 && (
-          <p className="mt-4 text-xs text-mute">
-            {failedCalls} call(s) en erreur — récupérables individuellement via "Retry analysis" depuis leur page.
-          </p>
-        )}
+        <p className="mt-4 text-xs text-mute">
+          Tu peux quitter cette page — l'analyse continue côté serveur. Retrouve-la dans History.
+        </p>
       </div>
     );
   }

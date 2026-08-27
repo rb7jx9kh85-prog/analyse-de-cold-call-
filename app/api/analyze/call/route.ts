@@ -1,14 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
+import { waitUntil } from "@vercel/functions";
 import { getSession, saveSession, saveCall, getWork, deleteWork, listCalls } from "@/lib/storage";
 import { analyzeCall } from "@/lib/ai/openai";
 import { formatTimestamp } from "@/lib/format";
 import { computeStats } from "@/lib/sessionStats";
+import { internalAuthHeaders } from "@/lib/internalFetch";
 import type { CallRecord, SessionRecord, TranscriptLine, SessionWorkData } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
+
+/** Fires the next call's analysis without waiting for it — this is what lets the whole
+ * pipeline keep running server-side after the browser navigates away or the tab closes.
+ * waitUntil keeps this function instance alive long enough to actually send the request. */
+function scheduleNextCall(origin: string, sessionId: string, nextIndex: number) {
+  waitUntil(
+    fetch(`${origin}/api/analyze/call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...internalAuthHeaders() },
+      body: JSON.stringify({ sessionId, index: nextIndex }),
+    }).catch(() => {
+      /* best effort — if this hop fails to even fire, the session will be visibly stuck
+       * at its last progressMessage rather than silently disappearing, which is diagnosable */
+    })
+  );
+}
 
 export async function POST(req: NextRequest) {
   const { sessionId, index } = (await req.json()) as { sessionId?: string; index?: number };
@@ -25,6 +43,9 @@ export async function POST(req: NextRequest) {
 
   const seg = work.callSegments[index];
   if (!seg) return NextResponse.json({ error: "Segment introuvable pour cet index." }, { status: 404 });
+
+  const isLast = index === work.callSegments.length - 1;
+  const origin = req.nextUrl.origin;
 
   try {
     const lines: TranscriptLine[] = work.transcriptSegments
@@ -107,7 +128,6 @@ export async function POST(req: NextRequest) {
     await saveCall(call);
 
     const allCalls = await listCalls(sessionId);
-    const isLast = index === work.callSegments.length - 1;
 
     let updatedSession: SessionRecord = {
       ...session,
@@ -122,11 +142,21 @@ export async function POST(req: NextRequest) {
       updatedSession = { ...updatedSession, status: "ready", progressMessage: null };
       await saveSession(updatedSession);
       await deleteWork(sessionId);
+    } else {
+      scheduleNextCall(origin, sessionId, index + 1);
     }
 
     return NextResponse.json({ call, session: updatedSession, done: isLast });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erreur pendant l'analyse de cet appel.";
+    // Keep the chain alive even when this hop hit an unexpected storage/network error —
+    // otherwise a single transient failure would leave the session stuck at "analyzing"
+    // forever with no visible error.
+    if (!isLast) {
+      scheduleNextCall(origin, sessionId, index + 1);
+    } else {
+      await saveSession({ ...session, status: "error", error: message, progressMessage: null }).catch(() => {});
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

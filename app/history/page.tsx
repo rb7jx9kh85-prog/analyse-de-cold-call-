@@ -10,13 +10,36 @@ export default function HistoryPage() {
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [query, setQuery] = useState("");
 
+  async function loadSessions() {
+    const res = await fetch("/api/sessions");
+    const d = await res.json();
+    const list: SessionRecord[] = d.sessions ?? [];
+    setSessions(list);
+    return list;
+  }
+
   useEffect(() => {
-    fetch("/api/sessions")
-      .then((r) => r.json())
-      .then((d) => setSessions(d.sessions ?? []));
     fetch("/api/calls")
       .then((r) => r.json())
       .then((d) => setCalls(d.calls ?? []));
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    async function poll() {
+      const list = await loadSessions();
+      if (cancelled) return;
+      const anyInProgress = list.some((s) => s.status !== "ready" && s.status !== "error");
+      if (anyInProgress) {
+        timer = setTimeout(poll, 5000);
+      }
+    }
+
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   const searchResults = useMemo(() => {
@@ -70,11 +93,17 @@ export default function HistoryPage() {
                     {formatDuration(s.duration)} · {s.stats.totalCalls} calls
                   </span>
                 </div>
-                <div className="text-right text-xs text-mute">
-                  <span className="block">{String(s.stats.yes).padStart(2, "0")} YES</span>
-                  <span className="block">{String(s.stats.no).padStart(2, "0")} NO</span>
-                  <span className="block">{String(s.stats.noAnswer).padStart(2, "0")} NO ANSWER</span>
-                </div>
+                {s.status !== "ready" && s.status !== "error" ? (
+                  <span className="label-ink animate-blink">{s.progressMessage ?? "PROCESSING…"}</span>
+                ) : s.status === "error" ? (
+                  <span className="text-[10px] uppercase tracking-label text-red">Error</span>
+                ) : (
+                  <div className="text-right text-xs text-mute">
+                    <span className="block">{String(s.stats.yes).padStart(2, "0")} YES</span>
+                    <span className="block">{String(s.stats.no).padStart(2, "0")} NO</span>
+                    <span className="block">{String(s.stats.noAnswer).padStart(2, "0")} NO ANSWER</span>
+                  </div>
+                )}
               </Link>
             </div>
           ))}

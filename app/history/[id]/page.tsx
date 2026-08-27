@@ -14,16 +14,33 @@ export default function SessionPage() {
   const [insightLoading, setInsightLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  async function load() {
+  async function load(): Promise<SessionRecord | null> {
     const res = await fetch(`/api/sessions/${id}`);
-    if (!res.ok) return;
+    if (!res.ok) return null;
     const data = await res.json();
     setSession(data.session);
     setCalls(data.calls ?? []);
+    return data.session ?? null;
   }
 
   useEffect(() => {
-    load();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    async function poll() {
+      const s = await load();
+      if (cancelled) return;
+      const inProgress = s && s.status !== "ready" && s.status !== "error";
+      if (inProgress) {
+        timer = setTimeout(poll, 3000);
+      }
+    }
+
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [id]);
 
   async function runInsight() {
@@ -53,11 +70,30 @@ export default function SessionPage() {
   const bestCall = calls.find((c) => c.id === session.stats.bestCallId);
   const worstCall = calls.find((c) => c.id === session.stats.worstCallId);
   const failedCalls = calls.filter((c) => !c.edited && c.analysisNote.startsWith("Analyse indisponible"));
+  const inProgress = session.status !== "ready" && session.status !== "error";
 
   return (
     <div className="animate-rise">
       <span className="label-ink block">{session.id}</span>
       <span className="label mt-1 block">{formatDateTime(session.createdAt)}</span>
+
+      {inProgress && (
+        <div className="mt-4 border border-hair px-4 py-3">
+          <span className="block text-[10px] uppercase tracking-label text-ink animate-blink">
+            {session.progressMessage ?? "PROCESSING…"}
+          </span>
+          <p className="mt-1 text-xs text-mute">
+            L'analyse tourne côté serveur — cette page se met à jour automatiquement, tu peux aussi la fermer et revenir plus tard.
+          </p>
+        </div>
+      )}
+
+      {session.status === "error" && session.error && (
+        <div className="mt-4 border border-red px-4 py-3">
+          <span className="block text-[10px] uppercase tracking-label text-red">Session error</span>
+          <p className="mt-1 text-xs text-mute">{session.error}</p>
+        </div>
+      )}
 
       {failedCalls.length > 0 && (
         <div className="mt-4 border border-red px-4 py-3">
