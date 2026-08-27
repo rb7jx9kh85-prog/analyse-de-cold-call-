@@ -2,7 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatDuration, formatDate } from "@/lib/format";
+import { upload } from "@vercel/blob/client";
+import { formatDate } from "@/lib/format";
 
 const STEPS = ["01 — UPLOADING", "02 — TRANSCRIBING", "03 — DETECTING CALLS", "04 — ANALYZING", "05 — SAVING"];
 
@@ -36,11 +37,32 @@ export default function AnalyzePage() {
     }, 4000);
 
     try {
-      const body = new FormData();
-      body.append("file", file);
-      const res = await fetch("/api/analyze", { method: "POST", body });
+      const sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}`;
+
+      const blob = await upload(`audio/${sessionId}/${file.name}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/blob-upload",
+      });
+
+      setProgress(STEPS[1]);
+
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, audioUrl: blob.url, filename: file.name, contentType: file.type }),
+      });
       clearInterval(pollInterval);
-      const data = await res.json();
+
+      const raw = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        setError(res.status === 413 ? "Fichier trop volumineux pour être analysé." : `Erreur serveur (${res.status}).`);
+        setStatus("error");
+        return;
+      }
+
       if (!res.ok) {
         setError(data.error ?? "Erreur pendant l'analyse.");
         setStatus("error");

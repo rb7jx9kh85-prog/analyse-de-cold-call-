@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { uploadAudio, saveSession, saveCall, getSession } from "@/lib/storage";
-import { transcribeAudio, segmentCalls, analyzeCall } from "@/lib/ai/openai";
+import { saveSession, saveCall, getSession } from "@/lib/storage";
+import { transcribeAudio, segmentCalls, analyzeCall, MAX_AUDIO_BYTES } from "@/lib/ai/openai";
 import { formatTimestamp } from "@/lib/format";
 import type { CallRecord, SessionRecord, TranscriptLine } from "@/lib/types";
 import { outcomeGroup } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-const ALLOWED_TYPES = ["audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/m4a", "audio/x-m4a", "video/mp4"];
-const MAX_SIZE = 25 * 1024 * 1024;
+export const dynamic = "force-dynamic";
 
 function computeStats(calls: CallRecord[]): SessionRecord["stats"] {
   const yes = calls.filter((c) => outcomeGroup(c.outcome) === "yes").length;
@@ -62,44 +60,42 @@ function computeStats(calls: CallRecord[]): SessionRecord["stats"] {
 }
 
 export async function POST(req: NextRequest) {
-  const sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}`;
+  let sessionId = `SESSION-${Date.now().toString(36).toUpperCase()}`;
 
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const body = await req.json();
+    const { audioUrl, filename, contentType } = body as { audioUrl?: string; filename?: string; contentType?: string };
+    if (body.sessionId) sessionId = body.sessionId;
 
-    if (!file) {
-      return NextResponse.json({ error: "Aucun fichier fourni." }, { status: 400 });
-    }
-    if (file.size > MAX_SIZE) {
-      return NextResponse.json(
-        { error: "Le fichier dépasse 25MB. Découpe l'enregistrement en fichiers plus courts et réessaie." },
-        { status: 400 }
-      );
-    }
-    if (ALLOWED_TYPES.length && file.type && !ALLOWED_TYPES.includes(file.type)) {
-      // Some browsers/OS mislabel mp3/m4a mime types — don't hard block, just log via note.
+    if (!audioUrl) {
+      return NextResponse.json({ error: "Aucun fichier audio fourni." }, { status: 400 });
     }
 
     let session: SessionRecord = {
       id: sessionId,
       createdAt: new Date().toISOString(),
-      label: file.name,
-      audioUrl: null,
+      label: filename ?? "Session",
+      audioUrl,
       duration: 0,
-      status: "uploading",
-      progressMessage: "01 — UPLOADING",
+      status: "transcribing",
+      progressMessage: "02 — TRANSCRIBING",
       error: null,
       callIds: [],
       stats: computeStats([]),
     };
     await saveSession(session);
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const audioUrl = await uploadAudio(sessionId, file.name, buffer, file.type || "audio/mpeg");
-
-    session = { ...session, audioUrl, status: "transcribing", progressMessage: "02 — TRANSCRIBING" };
-    await saveSession(session);
+    const audioRes = await fetch(audioUrl);
+    if (!audioRes.ok) {
+      throw new Error("Impossible de récupérer le fichier audio uploadé.");
+    }
+    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+    if (audioBuffer.byteLength > MAX_AUDIO_BYTES) {
+      throw new Error(
+        "Le fichier dépasse la limite de 25MB imposée par l'API de transcription. Découpe l'enregistrement en plusieurs fichiers plus courts et importe-les séparément."
+      );
+    }
+    const file = new File([audioBuffer], filename ?? "recording", { type: contentType ?? "audio/mpeg" });
 
     const transcription = await transcribeAudio(file);
 
